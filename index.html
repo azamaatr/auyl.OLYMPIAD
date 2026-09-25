@@ -1401,7 +1401,7 @@ window.OLYMPIAD_DATA = {
         });
         updateSyncMessage('success',`Нәтиже ${CONFIG.teacherName || 'Азамат ағайға'} сәтті жіберілді.`);
       }catch(err){
-        updateSyncMessage('error','Ұпайыңыз есептелді. Бірақ нәтижені Google Sheets-ке жіберу мүмкін болмады. Интернетті тексеріп, Азамат ағайға хабарлаңыз.');
+        updateSyncMessage('error','Ұпайыңыз есептелді. Нәтижені жіберу кезінде байланыс қатесі болды. Интернетті тексеріп, қайтадан байқап көріңіз.');
       }
     } else {
       // Демо режимінде ұпай бәрібір оқушыға көрінеді.
@@ -1411,18 +1411,29 @@ window.OLYMPIAD_DATA = {
     clearPersisted();
   }
 
-  function submitToGoogle(payload){
-    return new Promise((resolve,reject)=>{
-      const cb='__auyl_cb_'+Date.now()+'_'+Math.random().toString(36).slice(2,7);
-      const script=document.createElement('script');
-      const timer=setTimeout(()=>cleanup(new Error('timeout')), CONFIG.submitTimeoutMs || 15000);
-      function cleanup(err,data){ clearTimeout(timer); try{delete window[cb]}catch{}; script.remove(); err?reject(err):resolve(data); }
-      window[cb]=(data)=>{ if(data && data.ok) cleanup(null,data); else cleanup(new Error((data&&data.error)||'submit_failed')); };
-      const p=new URLSearchParams({...payload,callback:cb,action:'submit'});
-      script.onerror=()=>cleanup(new Error('network'));
-      script.src=CONFIG.googleScriptUrl+(CONFIG.googleScriptUrl.includes('?')?'&':'?')+p.toString();
-      document.body.appendChild(script);
+  async function submitToGoogle(payload){
+    // Google Apps Script жауабын браузер CORS салдарынан оқи алмауы мүмкін.
+    // Сондықтан сұранысты no-cors режимінде жібереміз.
+    // Google Sheets-ке жазу сервер жағында орындалады.
+    const p = new URLSearchParams({
+      attemptId: payload.attemptId || '',
+      studentName: payload.studentName || '',
+      score: String(payload.score ?? 0),
+      maxScore: String(payload.maxScore ?? 50)
     });
+
+    const url = CONFIG.googleScriptUrl
+      + (CONFIG.googleScriptUrl.includes('?') ? '&' : '?')
+      + p.toString();
+
+    await fetch(url, {
+      method: 'GET',
+      mode: 'no-cors',
+      cache: 'no-store',
+      keepalive: true
+    });
+
+    return { ok: true };
   }
 
   function showResult(v,sync){
