@@ -94,7 +94,7 @@ footer{max-width:1180px;width:100%;margin:auto;padding:26px 28px 34px;display:fl
             <label class="field-label" for="studentName">Аты-жөніңіз</label>
             <div class="input-wrap">
               <span class="input-icon">👤</span>
-              <input id="studentName" type="text" maxlength="80" autocomplete="name" placeholder="Мысалы: Айдана Серікқызы">
+              <input id="studentName" type="text" maxlength="80" autocomplete="name" placeholder="Мысалы: Бауыржан Биназар">
             </div>
             <div id="nameError" class="field-error" aria-live="polite"></div>
 
@@ -198,7 +198,7 @@ footer{max-width:1180px;width:100%;margin:auto;padding:26px 28px 34px;display:fl
     </main>
 
     <footer>
-      <div><b>AUYL OLYMPIAD</b> · Информатикадан дайындық платформасы</div>
+      <div><b>AUYL OLYMPIAD</b> · Информатикадан дайындық платформасы · v1.2</div>
       <div>Бұл ресми Ұлттық тестілеу орталығының сайты емес.</div>
     </footer>
   </div>
@@ -220,7 +220,7 @@ window.AUYL_CONFIG = {
   teacherName: "Азамат ағай",
   siteTitle: "Ауыл олимпиадасы",
   classLabel: "Информатика · 11 сынып",
-  submitTimeoutMs: 15000
+  submitTimeoutMs: 20000
 };
 
 </script>
@@ -1243,6 +1243,16 @@ window.OLYMPIAD_DATA = {
   let state = null;
   let lastResult = null;
 
+  function storageGet(key){
+    try{ return window.localStorage.getItem(key); }catch{ return null; }
+  }
+  function storageSet(key,value){
+    try{ window.localStorage.setItem(key,value); return true; }catch{ return false; }
+  }
+  function storageRemove(key){
+    try{ window.localStorage.removeItem(key); }catch{}
+  }
+
   function variantById(id){ return DATA.variants.find(v => v.id === id); }
   function questionsFor(v){ return DATA.banks[v.bank]; }
   function makeAttemptId(){ return 'AUYL-' + Date.now().toString(36).toUpperCase() + '-' + Math.random().toString(36).slice(2,7).toUpperCase(); }
@@ -1288,11 +1298,11 @@ window.OLYMPIAD_DATA = {
     openTest();
   }
 
-  function persist(){ if(state) localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
-  function clearPersisted(){ localStorage.removeItem(STORAGE_KEY); }
+  function persist(){ if(state) storageSet(STORAGE_KEY, JSON.stringify(state)); }
+  function clearPersisted(){ storageRemove(STORAGE_KEY); }
   function readPersisted(){
     try{
-      const raw=localStorage.getItem(STORAGE_KEY); if(!raw) return null;
+      const raw=storageGet(STORAGE_KEY); if(!raw) return null;
       const s=JSON.parse(raw); if(!variantById(s.variantId) || !Array.isArray(s.answers)) return null;
       return s;
     }catch{ return null; }
@@ -1373,12 +1383,12 @@ window.OLYMPIAD_DATA = {
   }
 
   function savePending(data){
-    localStorage.setItem(PENDING_KEY, JSON.stringify(data));
+    storageSet(PENDING_KEY, JSON.stringify(data));
   }
 
   function readPending(){
     try{
-      const raw = localStorage.getItem(PENDING_KEY);
+      const raw = storageGet(PENDING_KEY);
       return raw ? JSON.parse(raw) : null;
     }catch{
       return null;
@@ -1386,7 +1396,7 @@ window.OLYMPIAD_DATA = {
   }
 
   function clearPending(){
-    localStorage.removeItem(PENDING_KEY);
+    storageRemove(PENDING_KEY);
   }
 
   function showSubmitting(){
@@ -1398,7 +1408,7 @@ window.OLYMPIAD_DATA = {
     el.submitSpinner.classList.remove('hidden');
     el.resendBtn.classList.add('hidden');
     el.submitTitle.textContent = 'Нәтиже сақталуда...';
-    el.submitText.textContent = 'Google кестеге нәтиже түскенше бетті жаппаңыз. Әдетте 2–5 секунд.';
+    el.submitText.textContent = 'Нәтиже Google кестеге жіберілуде. Бетті жаппаңыз — бірнеше секунд күтіңіз.';
     window.scrollTo({top:0,behavior:'smooth'});
   }
 
@@ -1446,9 +1456,6 @@ window.OLYMPIAD_DATA = {
 
     showSubmitting();
 
-    // Мобильді браузер бетті жауып жіберген жағдайға резервтік сұраныс.
-    fireBackup(payload);
-
     try{
       const response = await submitToGoogle(payload);
       if(!response || !response.ok) throw new Error('save_failed');
@@ -1466,8 +1473,35 @@ window.OLYMPIAD_DATA = {
 
   function submitToGoogle(payload){
     return new Promise((resolve,reject)=>{
-      const cb = '__auyl_cb_' + Date.now() + '_' + Math.random().toString(36).slice(2,7);
-      const script = document.createElement('script');
+      if(!CONFIG.googleScriptUrl){
+        reject(new Error('google_url_missing'));
+        return;
+      }
+
+      const requestId = 'AUYL_' + Date.now() + '_' + Math.random().toString(36).slice(2,8);
+      const iframe = document.createElement('iframe');
+
+      iframe.style.position = 'fixed';
+      iframe.style.width = '1px';
+      iframe.style.height = '1px';
+      iframe.style.opacity = '0';
+      iframe.style.pointerEvents = 'none';
+      iframe.style.border = '0';
+      iframe.setAttribute('aria-hidden','true');
+
+      const p = new URLSearchParams({
+        action: 'submit',
+        requestId,
+        attemptId: payload.attemptId || '',
+        studentName: payload.studentName || '',
+        score: String(payload.score ?? 0),
+        maxScore: String(payload.maxScore ?? 50)
+      });
+
+      const url = CONFIG.googleScriptUrl
+        + (CONFIG.googleScriptUrl.includes('?') ? '&' : '?')
+        + p.toString();
+
       let finished = false;
 
       const timer = setTimeout(()=>{
@@ -1475,66 +1509,36 @@ window.OLYMPIAD_DATA = {
         finished = true;
         cleanup();
         reject(new Error('timeout'));
-      }, CONFIG.submitTimeoutMs || 15000);
+      }, CONFIG.submitTimeoutMs || 20000);
 
       function cleanup(){
         clearTimeout(timer);
-        try{ delete window[cb]; }catch{}
-        script.remove();
+        window.removeEventListener('message', onMessage);
+        setTimeout(()=>iframe.remove(), 0);
       }
 
-      window[cb] = (data)=>{
+      function onMessage(event){
+        const data = event.data;
+
+        if(!data || data.source !== 'AUYL_OLYMPIAD') return;
+        if(data.requestId !== requestId) return;
+        if(data.attemptId !== (payload.attemptId || '')) return;
+
         if(finished) return;
         finished = true;
         cleanup();
-        if(data && data.ok) resolve(data);
-        else reject(new Error((data && (data.error || data.message)) || 'submit_failed'));
-      };
 
-      const p = new URLSearchParams({
-        attemptId: payload.attemptId || '',
-        studentName: payload.studentName || '',
-        score: String(payload.score ?? 0),
-        maxScore: String(payload.maxScore ?? 50),
-        callback: cb
-      });
+        if(data.ok){
+          resolve(data);
+        }else{
+          reject(new Error(data.error || 'save_failed'));
+        }
+      }
 
-      script.onerror = ()=>{
-        if(finished) return;
-        finished = true;
-        cleanup();
-        reject(new Error('network'));
-      };
-
-      script.src = CONFIG.googleScriptUrl
-        + (CONFIG.googleScriptUrl.includes('?') ? '&' : '?')
-        + p.toString();
-
-      document.body.appendChild(script);
+      window.addEventListener('message', onMessage);
+      iframe.src = url;
+      document.body.appendChild(iframe);
     });
-  }
-
-  function fireBackup(payload){
-    if(!CONFIG.googleScriptUrl) return;
-
-    const p = new URLSearchParams({
-      attemptId: payload.attemptId || '',
-      studentName: payload.studentName || '',
-      score: String(payload.score ?? 0),
-      maxScore: String(payload.maxScore ?? 50)
-    });
-
-    const url = CONFIG.googleScriptUrl
-      + (CONFIG.googleScriptUrl.includes('?') ? '&' : '?')
-      + p.toString();
-
-    // keepalive: true мобильді браузер жабылған сәтте де сұранысты аяқтауға көмектеседі.
-    fetch(url,{
-      method:'GET',
-      mode:'no-cors',
-      cache:'no-store',
-      keepalive:true
-    }).catch(()=>{});
   }
 
   async function resendPending(){
@@ -1563,7 +1567,6 @@ window.OLYMPIAD_DATA = {
     };
 
     showSubmitting();
-    fireBackup(pending.payload);
 
     try{
       const response = await submitToGoogle(pending.payload);
@@ -1625,10 +1628,6 @@ window.OLYMPIAD_DATA = {
   el.resumeBtn.addEventListener('click',()=>{const s=readPersisted();if(s){state=s;selectedVariantId=s.variantId;openTest();}});
   el.discardBtn.addEventListener('click',()=>{clearPersisted();checkResume();});
   window.addEventListener('beforeunload',()=>{if(state && !el.test.classList.contains('hidden')) persist();});
-  window.addEventListener('pagehide',()=>{
-    const pending = readPending();
-    if(pending && pending.payload) fireBackup(pending.payload);
-  });
 
   // Init
   renderVariants();
