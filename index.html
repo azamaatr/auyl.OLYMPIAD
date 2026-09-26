@@ -162,11 +162,12 @@ footer{max-width:1180px;width:100%;margin:auto;padding:26px 28px 34px;display:fl
       <section id="resultView" class="view result-view hidden">
         <div class="result-card card">
           <div id="submitState" class="submit-state">
-            <div class="spinner" aria-hidden="true"></div>
+            <div id="submitSpinner" class="spinner" aria-hidden="true"></div>
             <div>
               <span class="step-kicker">Тест аяқталды</span>
-              <h2 id="submitTitle">Нәтиже Азамат ағайға жіберіледі.</h2>
-              <p id="submitText">Бірнеше секунд күтіңіз. Бетті жаппаңыз.</p>
+              <h2 id="submitTitle">Нәтиже сақталуда...</h2>
+              <p id="submitText">Google кестеге нәтиже түскенше бетті жаппаңыз.</p>
+              <button id="resendBtn" class="btn btn-primary hidden" type="button" style="margin-top:14px">Қайта жіберу</button>
             </div>
           </div>
 
@@ -1222,6 +1223,7 @@ window.OLYMPIAD_DATA = {
   const CONFIG = window.AUYL_CONFIG || {};
   const LETTERS = ['A','B','C','D'];
   const STORAGE_KEY = 'aulOlympiadActiveV1';
+  const PENDING_KEY = 'auylOlympiadPendingV1';
 
   const $ = (id) => document.getElementById(id);
   const el = {
@@ -1232,7 +1234,7 @@ window.OLYMPIAD_DATA = {
     questionNumber: $('questionNumber'), questionPoints: $('questionPoints'), questionText: $('questionText'), questionExtra: $('questionExtra'), answerOptions: $('answerOptions'), navigator: $('questionNavigator'),
     prevBtn: $('prevBtn'), nextBtn: $('nextBtn'), finishBtn: $('finishBtn'), miniScore: $('miniScore'),
     modal: $('finishModal'), modalText: $('modalText'), cancelFinishBtn: $('cancelFinishBtn'), confirmFinishBtn: $('confirmFinishBtn'),
-    submitState: $('submitState'), submitTitle: $('submitTitle'), submitText: $('submitText'), resultContent: $('resultContent'), resultHeadline: $('resultHeadline'), resultSubtitle: $('resultSubtitle'),
+    submitState: $('submitState'), submitSpinner: $('submitSpinner'), submitTitle: $('submitTitle'), submitText: $('submitText'), resendBtn: $('resendBtn'), resultContent: $('resultContent'), resultHeadline: $('resultHeadline'), resultSubtitle: $('resultSubtitle'),
     scoreValue: $('scoreValue'), correctValue: $('correctValue'), percentValue: $('percentValue'), durationValue: $('durationValue'), variantValue: $('variantValue'), scoreRing: $('scoreRing'), syncMessage: $('syncMessage'),
     homeBtn: $('homeBtn'), retryBtn: $('retryBtn')
   };
@@ -1370,51 +1372,151 @@ window.OLYMPIAD_DATA = {
     return {score,correct,maxScore:v.maxScore,percent:Math.round(score/v.maxScore*100),durationSec,answerLetters};
   }
 
-  async function finish(){
-    closeFinishModal();
-    const v=variantById(state.variantId);
-    lastResult=grade();
-
-    // Оқушы нәтижесін күттірмей бірден көрсетеміз.
-    el.test.classList.add('hidden');
-    el.result.classList.remove('hidden');
-    el.submitState.classList.add('hidden');
-    el.resultContent.classList.remove('hidden');
-    showResult(v,{status:'sending',message:`Нәтиже ${CONFIG.teacherName || 'Азамат ағайға'} жіберіледі.`});
-    window.scrollTo({top:0,behavior:'smooth'});
-
-    if(CONFIG.googleScriptUrl && /^https:\/\/script\.google\.com\//.test(CONFIG.googleScriptUrl)){
-      try{
-        await submitToGoogle({
-          attemptId:state.attemptId,
-          studentName:state.studentName,
-          variantId:v.id,
-          variantTitle:v.title,
-          year:v.year,
-          stage:v.stage,
-          score:lastResult.score,
-          maxScore:lastResult.maxScore,
-          percent:lastResult.percent,
-          correct:lastResult.correct,
-          answers:lastResult.answerLetters,
-          durationSec:lastResult.durationSec
-        });
-        updateSyncMessage('success',`Нәтиже ${CONFIG.teacherName || 'Азамат ағайға'} сәтті жіберілді.`);
-      }catch(err){
-        updateSyncMessage('error','Ұпайыңыз есептелді. Нәтижені жіберу кезінде байланыс қатесі болды. Интернетті тексеріп, қайтадан байқап көріңіз.');
-      }
-    } else {
-      // Демо режимінде ұпай бәрібір оқушыға көрінеді.
-      updateSyncMessage('warning',`Нәтиже есептелді. Google Sheets қосылғаннан кейін ол ${CONFIG.teacherName || 'Азамат ағайға'} автоматты жіберіледі.`);
-    }
-
-    clearPersisted();
+  function savePending(data){
+    localStorage.setItem(PENDING_KEY, JSON.stringify(data));
   }
 
-  async function submitToGoogle(payload){
-    // Google Apps Script жауабын браузер CORS салдарынан оқи алмауы мүмкін.
-    // Сондықтан сұранысты no-cors режимінде жібереміз.
-    // Google Sheets-ке жазу сервер жағында орындалады.
+  function readPending(){
+    try{
+      const raw = localStorage.getItem(PENDING_KEY);
+      return raw ? JSON.parse(raw) : null;
+    }catch{
+      return null;
+    }
+  }
+
+  function clearPending(){
+    localStorage.removeItem(PENDING_KEY);
+  }
+
+  function showSubmitting(){
+    el.test.classList.add('hidden');
+    el.landing.classList.add('hidden');
+    el.result.classList.remove('hidden');
+    el.resultContent.classList.add('hidden');
+    el.submitState.classList.remove('hidden');
+    el.submitSpinner.classList.remove('hidden');
+    el.resendBtn.classList.add('hidden');
+    el.submitTitle.textContent = 'Нәтиже сақталуда...';
+    el.submitText.textContent = 'Google кестеге нәтиже түскенше бетті жаппаңыз. Әдетте 2–5 секунд.';
+    window.scrollTo({top:0,behavior:'smooth'});
+  }
+
+  function showSubmitError(){
+    el.resultContent.classList.add('hidden');
+    el.submitState.classList.remove('hidden');
+    el.submitSpinner.classList.add('hidden');
+    el.submitTitle.textContent = 'Нәтиже әлі сақталмады';
+    el.submitText.textContent = 'Интернетті тексеріп, «Қайта жіберу» батырмасын басыңыз. Ұпай Google кестеге сақталғаннан кейін ғана көрсетіледі.';
+    el.resendBtn.classList.remove('hidden');
+  }
+
+  function buildPayload(v){
+    return {
+      attemptId: state.attemptId,
+      studentName: state.studentName,
+      variantId: v.id,
+      variantTitle: v.title,
+      year: v.year,
+      stage: v.stage,
+      score: lastResult.score,
+      maxScore: lastResult.maxScore,
+      percent: lastResult.percent,
+      correct: lastResult.correct,
+      answers: lastResult.answerLetters,
+      durationSec: lastResult.durationSec
+    };
+  }
+
+  async function finish(){
+    closeFinishModal();
+    const v = variantById(state.variantId);
+    lastResult = grade();
+
+    const payload = buildPayload(v);
+
+    // Нәтиже алдымен localStorage-қа сақталады.
+    // Оқушы бетті ерте жауып жіберсе де, келесі ашқанда қайта жіберуге болады.
+    savePending({
+      payload,
+      result: lastResult,
+      variantId: v.id,
+      studentName: state.studentName
+    });
+
+    showSubmitting();
+
+    // Мобильді браузер бетті жауып жіберген жағдайға резервтік сұраныс.
+    fireBackup(payload);
+
+    try{
+      const response = await submitToGoogle(payload);
+      if(!response || !response.ok) throw new Error('save_failed');
+
+      clearPending();
+      clearPersisted();
+
+      el.submitState.classList.add('hidden');
+      el.resultContent.classList.remove('hidden');
+      showResult(v,{status:'success',message:`Нәтиже ${CONFIG.teacherName || 'Азамат ағайға'} сәтті жіберілді.`});
+    }catch(err){
+      showSubmitError();
+    }
+  }
+
+  function submitToGoogle(payload){
+    return new Promise((resolve,reject)=>{
+      const cb = '__auyl_cb_' + Date.now() + '_' + Math.random().toString(36).slice(2,7);
+      const script = document.createElement('script');
+      let finished = false;
+
+      const timer = setTimeout(()=>{
+        if(finished) return;
+        finished = true;
+        cleanup();
+        reject(new Error('timeout'));
+      }, CONFIG.submitTimeoutMs || 15000);
+
+      function cleanup(){
+        clearTimeout(timer);
+        try{ delete window[cb]; }catch{}
+        script.remove();
+      }
+
+      window[cb] = (data)=>{
+        if(finished) return;
+        finished = true;
+        cleanup();
+        if(data && data.ok) resolve(data);
+        else reject(new Error((data && (data.error || data.message)) || 'submit_failed'));
+      };
+
+      const p = new URLSearchParams({
+        attemptId: payload.attemptId || '',
+        studentName: payload.studentName || '',
+        score: String(payload.score ?? 0),
+        maxScore: String(payload.maxScore ?? 50),
+        callback: cb
+      });
+
+      script.onerror = ()=>{
+        if(finished) return;
+        finished = true;
+        cleanup();
+        reject(new Error('network'));
+      };
+
+      script.src = CONFIG.googleScriptUrl
+        + (CONFIG.googleScriptUrl.includes('?') ? '&' : '?')
+        + p.toString();
+
+      document.body.appendChild(script);
+    });
+  }
+
+  function fireBackup(payload){
+    if(!CONFIG.googleScriptUrl) return;
+
     const p = new URLSearchParams({
       attemptId: payload.attemptId || '',
       studentName: payload.studentName || '',
@@ -1426,14 +1528,56 @@ window.OLYMPIAD_DATA = {
       + (CONFIG.googleScriptUrl.includes('?') ? '&' : '?')
       + p.toString();
 
-    await fetch(url, {
-      method: 'GET',
-      mode: 'no-cors',
-      cache: 'no-store',
-      keepalive: true
-    });
+    // keepalive: true мобильді браузер жабылған сәтте де сұранысты аяқтауға көмектеседі.
+    fetch(url,{
+      method:'GET',
+      mode:'no-cors',
+      cache:'no-store',
+      keepalive:true
+    }).catch(()=>{});
+  }
 
-    return { ok: true };
+  async function resendPending(){
+    const pending = readPending();
+    if(!pending || !pending.payload) return;
+
+    const v = variantById(pending.variantId || pending.payload.variantId);
+    if(!v) return;
+
+    state = state || {
+      attemptId: pending.payload.attemptId,
+      studentName: pending.studentName || pending.payload.studentName,
+      variantId: v.id,
+      answers: [],
+      current: 0,
+      startedAt: Date.now()
+    };
+
+    lastResult = pending.result || {
+      score: Number(pending.payload.score || 0),
+      maxScore: Number(pending.payload.maxScore || 50),
+      percent: Number(pending.payload.percent || 0),
+      correct: Number(pending.payload.correct || 0),
+      durationSec: Number(pending.payload.durationSec || 0),
+      answerLetters: pending.payload.answers || ''
+    };
+
+    showSubmitting();
+    fireBackup(pending.payload);
+
+    try{
+      const response = await submitToGoogle(pending.payload);
+      if(!response || !response.ok) throw new Error('save_failed');
+
+      clearPending();
+      clearPersisted();
+
+      el.submitState.classList.add('hidden');
+      el.resultContent.classList.remove('hidden');
+      showResult(v,{status:'success',message:`Нәтиже ${CONFIG.teacherName || 'Азамат ағайға'} сәтті жіберілді.`});
+    }catch(err){
+      showSubmitError();
+    }
   }
 
   function showResult(v,sync){
@@ -1477,13 +1621,22 @@ window.OLYMPIAD_DATA = {
   el.prevBtn.addEventListener('click',()=>go(-1)); el.nextBtn.addEventListener('click',()=>go(1));
   el.finishBtn.addEventListener('click',openFinishModal); el.cancelFinishBtn.addEventListener('click',closeFinishModal); el.confirmFinishBtn.addEventListener('click',finish);
   el.modal.addEventListener('click',(e)=>{if(e.target===el.modal) closeFinishModal();});
-  el.homeBtn.addEventListener('click',()=>resetToHome(true)); el.retryBtn.addEventListener('click',retry);
+  el.homeBtn.addEventListener('click',()=>resetToHome(true)); el.retryBtn.addEventListener('click',retry); el.resendBtn.addEventListener('click',resendPending);
   el.resumeBtn.addEventListener('click',()=>{const s=readPersisted();if(s){state=s;selectedVariantId=s.variantId;openTest();}});
   el.discardBtn.addEventListener('click',()=>{clearPersisted();checkResume();});
   window.addEventListener('beforeunload',()=>{if(state && !el.test.classList.contains('hidden')) persist();});
+  window.addEventListener('pagehide',()=>{
+    const pending = readPending();
+    if(pending && pending.payload) fireBackup(pending.payload);
+  });
 
   // Init
-  renderVariants(); checkResume();
+  renderVariants();
+  if(readPending()){
+    resendPending();
+  } else {
+    checkResume();
+  }
 })();
 
 </script>
