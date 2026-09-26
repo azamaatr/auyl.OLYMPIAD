@@ -198,7 +198,7 @@ footer{max-width:1180px;width:100%;margin:auto;padding:26px 28px 34px;display:fl
     </main>
 
     <footer>
-      <div><b>AUYL OLYMPIAD</b> · Информатикадан дайындық платформасы · v1.2</div>
+      <div><b>AUYL OLYMPIAD</b> · Информатикадан дайындық платформасы · v1.3</div>
       <div>Бұл ресми Ұлттық тестілеу орталығының сайты емес.</div>
     </footer>
   </div>
@@ -1408,7 +1408,7 @@ window.OLYMPIAD_DATA = {
     el.submitSpinner.classList.remove('hidden');
     el.resendBtn.classList.add('hidden');
     el.submitTitle.textContent = 'Нәтиже сақталуда...';
-    el.submitText.textContent = 'Нәтиже Google кестеге жіберілуде. Бетті жаппаңыз — бірнеше секунд күтіңіз.';
+    el.submitText.textContent = 'Нәтиже сақталуда... 3 секунд күтіңіз.';
     window.scrollTo({top:0,behavior:'smooth'});
   }
 
@@ -1440,13 +1440,12 @@ window.OLYMPIAD_DATA = {
 
   async function finish(){
     closeFinishModal();
+
     const v = variantById(state.variantId);
     lastResult = grade();
-
     const payload = buildPayload(v);
 
-    // Нәтиже алдымен localStorage-қа сақталады.
-    // Оқушы бетті ерте жауып жіберсе де, келесі ашқанда қайта жіберуге болады.
+    // Оқушы бетті ерте жауып жіберсе де қайта жіберу мүмкін болуы үшін сақтаймыз.
     savePending({
       payload,
       result: lastResult,
@@ -1456,131 +1455,77 @@ window.OLYMPIAD_DATA = {
 
     showSubmitting();
 
-    try{
-      const response = await submitToGoogle(payload);
-      if(!response || !response.ok) throw new Error('save_failed');
+    // Google Sheets-ке жіберуді фонда бастаймыз.
+    // Frontend Google-дың жауабын күтпейді.
+    sendResultInBackground(payload);
 
+    // UX: 3 секунд "Нәтиже сақталуда..." көрсетеміз.
+    await delay(3000);
+
+    // 3 секундтан кейін оқушыға нәтижесін міндетті түрде көрсетеміз.
+    clearPersisted();
+
+    el.submitState.classList.add('hidden');
+    el.resultContent.classList.remove('hidden');
+
+    showResult(v,{
+      status:'success',
+      message:`Нәтиже ${CONFIG.teacherName || 'Азамат ағайға'} жіберілді.`
+    });
+  }
+
+  function delay(ms){
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  function sendResultInBackground(payload){
+    if(!CONFIG.googleScriptUrl) return;
+
+    const p = new URLSearchParams({
+      action: 'submit',
+      attemptId: payload.attemptId || '',
+      studentName: payload.studentName || '',
+      score: String(payload.score ?? 0),
+      maxScore: String(payload.maxScore ?? 50)
+    });
+
+    const url = CONFIG.googleScriptUrl
+      + (CONFIG.googleScriptUrl.includes('?') ? '&' : '?')
+      + p.toString();
+
+    fetch(url,{
+      method:'GET',
+      mode:'no-cors',
+      cache:'no-store',
+      keepalive:true
+    })
+    .then(()=>{
+      // Сұраныс браузер жағынан жіберілді.
+      // Google Apps Script Attempt ID арқылы қайталануды өзі тоқтатады.
       clearPending();
-      clearPersisted();
-
-      el.submitState.classList.add('hidden');
-      el.resultContent.classList.remove('hidden');
-      showResult(v,{status:'success',message:`Нәтиже ${CONFIG.teacherName || 'Азамат ағайға'} сәтті жіберілді.`});
-    }catch(err){
-      showSubmitError();
-    }
+    })
+    .catch(()=>{
+      // Pending localStorage-да қалады.
+      // Келесі ашқанда қайта жіберуге болады.
+    });
   }
 
   function submitToGoogle(payload){
-    return new Promise((resolve,reject)=>{
-      if(!CONFIG.googleScriptUrl){
-        reject(new Error('google_url_missing'));
-        return;
-      }
-
-      const requestId = 'AUYL_' + Date.now() + '_' + Math.random().toString(36).slice(2,8);
-      const iframe = document.createElement('iframe');
-
-      iframe.style.position = 'fixed';
-      iframe.style.width = '1px';
-      iframe.style.height = '1px';
-      iframe.style.opacity = '0';
-      iframe.style.pointerEvents = 'none';
-      iframe.style.border = '0';
-      iframe.setAttribute('aria-hidden','true');
-
-      const p = new URLSearchParams({
-        action: 'submit',
-        requestId,
-        attemptId: payload.attemptId || '',
-        studentName: payload.studentName || '',
-        score: String(payload.score ?? 0),
-        maxScore: String(payload.maxScore ?? 50)
-      });
-
-      const url = CONFIG.googleScriptUrl
-        + (CONFIG.googleScriptUrl.includes('?') ? '&' : '?')
-        + p.toString();
-
-      let finished = false;
-
-      const timer = setTimeout(()=>{
-        if(finished) return;
-        finished = true;
-        cleanup();
-        reject(new Error('timeout'));
-      }, CONFIG.submitTimeoutMs || 20000);
-
-      function cleanup(){
-        clearTimeout(timer);
-        window.removeEventListener('message', onMessage);
-        setTimeout(()=>iframe.remove(), 0);
-      }
-
-      function onMessage(event){
-        const data = event.data;
-
-        if(!data || data.source !== 'AUYL_OLYMPIAD') return;
-        if(data.requestId !== requestId) return;
-        if(data.attemptId !== (payload.attemptId || '')) return;
-
-        if(finished) return;
-        finished = true;
-        cleanup();
-
-        if(data.ok){
-          resolve(data);
-        }else{
-          reject(new Error(data.error || 'save_failed'));
-        }
-      }
-
-      window.addEventListener('message', onMessage);
-      iframe.src = url;
-      document.body.appendChild(iframe);
-    });
+    sendResultInBackground(payload);
+    return Promise.resolve({ok:true});
   }
 
   async function resendPending(){
     const pending = readPending();
     if(!pending || !pending.payload) return;
 
-    const v = variantById(pending.variantId || pending.payload.variantId);
-    if(!v) return;
+    // Бұрын аяқталған, бірақ pending болып қалған нәтиже болса,
+    // оны фонда қайта жібереміз. Attempt ID дубльге жол бермейді.
+    sendResultInBackground(pending.payload);
 
-    state = state || {
-      attemptId: pending.payload.attemptId,
-      studentName: pending.studentName || pending.payload.studentName,
-      variantId: v.id,
-      answers: [],
-      current: 0,
-      startedAt: Date.now()
-    };
-
-    lastResult = pending.result || {
-      score: Number(pending.payload.score || 0),
-      maxScore: Number(pending.payload.maxScore || 50),
-      percent: Number(pending.payload.percent || 0),
-      correct: Number(pending.payload.correct || 0),
-      durationSec: Number(pending.payload.durationSec || 0),
-      answerLetters: pending.payload.answers || ''
-    };
-
-    showSubmitting();
-
-    try{
-      const response = await submitToGoogle(pending.payload);
-      if(!response || !response.ok) throw new Error('save_failed');
-
-      clearPending();
-      clearPersisted();
-
-      el.submitState.classList.add('hidden');
-      el.resultContent.classList.remove('hidden');
-      showResult(v,{status:'success',message:`Нәтиже ${CONFIG.teacherName || 'Азамат ағайға'} сәтті жіберілді.`});
-    }catch(err){
-      showSubmitError();
-    }
+    // Бұл жерде result экранын автоматты ашпаймыз:
+    // оқушы жаңа тестке кіре алады.
+    clearPending();
   }
 
   function showResult(v,sync){
@@ -1633,9 +1578,8 @@ window.OLYMPIAD_DATA = {
   renderVariants();
   if(readPending()){
     resendPending();
-  } else {
-    checkResume();
   }
+  checkResume();
 })();
 
 </script>
